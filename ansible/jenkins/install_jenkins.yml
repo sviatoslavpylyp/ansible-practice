@@ -1,0 +1,53 @@
+---
+- name: Install and Enable Jenkins
+  hosts: all
+  become: no
+  vars_files:
+    - ../vars/vars.yml
+
+  tasks:
+    - name: Install Java
+      apt:
+        name: openjdk-17-jdk
+        state: present
+        update_cache: yes
+        
+    - name: Install UFW 
+      apt: 
+        name: ufw
+        state: present
+
+    - name: Add Jenkins apt key
+      apt_key:
+        url: https://pkg.jenkins.io/debian/jenkins.io-2023.key
+        state: present
+
+    - name: Add Jenkins apt repository
+      apt_repository:
+        repo: 'deb https://pkg.jenkins.io/debian-stable binary/'
+        state: present
+        filename: 'jenkins'
+
+    - name: Install Jenkins
+      apt:
+        name: jenkins
+        state: present
+        update_cache: yes
+
+    - name: Ensure Jenkins service is running and enabled
+      systemd:
+        name: jenkins
+        state: started
+        enabled: yes
+
+    - name: Allow Jenkins port in UFW firewall
+      ufw:
+        rule: allow
+        port: "{{ jenkins_port }}"
+        proto: tcp
+
+  handlers:
+    - name: Restart Jenkins
+      systemd:
+        name: jenkins
+        state: restarted

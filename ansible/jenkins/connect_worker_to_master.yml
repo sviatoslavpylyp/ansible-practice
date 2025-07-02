@@ -1,0 +1,104 @@
+---
+- name: Register Jenkins agents on master node
+  hosts: master_node
+  become: yes
+  vars_files:
+    - ../vars/vars.yml
+
+  vars:
+    jenkins_url: "http://{{ ansible_host }}:{{ jenkins_port }}"
+
+  pre_tasks:
+    - name: Set Jenkins API token dynamically
+      set_fact:
+        jenkins_api_token: "{{ lookup('vars', 'jenkins_' + inventory_hostname + '_api_token') }}"
+
+  tasks:
+    - name: Download Jenkins CLI jar to master
+      get_url:
+        url: "{{ jenkins_url }}/jnlpJars/jenkins-cli.jar"
+        dest: "{{ jenkins_cli_jar }}"
+        mode: '0755'
+
+    - name: Get list of Jenkins nodes
+      uri:
+        url: "{{ jenkins_url }}/computer/api/json"
+        user: "{{ jenkins_user }}"
+        password: "{{ jenkins_api_token }}"
+        force_basic_auth: yes
+        return_content: yes
+      register: jenkins_nodes
+
+    - name: Create Jenkins agent nodes via CLI
+      vars:
+        node_name: "{{ item }}"
+        node_host: "{{ hostvars[item].ansible_host }}"
+        label: "{{ node_name }}"
+      loop: "{{ groups['agents'] }}"
+      shell: |
+        cat <<EOF | java -jar {{ jenkins_cli_jar }} -s {{ jenkins_url }} -auth {{ jenkins_user }}:{{ jenkins_api_token }} create-node {{ node_name }}
+        <slave>
+          <name>{{ node_name }}</name>
+          <description>Agent node {{ node_name }}</description>
+          <remoteFS>{{ remote_fs }}</remoteFS>
+          <numExecutors>{{ executors }}</numExecutors>
+          <label>{{ label }}</label>
+          <mode>NORMAL</mode>
+          <retentionStrategy class="hudson.slaves.RetentionStrategy$Always"/>
+          <launcher class="hudson.slaves.JNLPLauncher"/>
+          <nodeProperties/>
+        </slave>
+        EOF
+      args:
+        executable: /bin/bash
+      when: >
+        (jenkins_nodes.json.computer | map(attribute='displayName') | select('equalto', item) | list | length) == 0
+
+
+
+- name: Configure Jenkins agent nodes
+  hosts: agents
+  become: yes
+  vars_files:
+    - ../vars/vars.yml
+
+  vars:
+    master_host: "{{ hostvars[groups['master_node'][0]].ansible_host }}"
+    jenkins_url: "http://{{ master_host }}:{{ jenkins_port }}"
+
+  tasks:
+    - name: Ensure Jenkins agent working directory exists
+      file:
+        path: "{{ remote_fs }}"
+        state: directory
+        owner: jenkins
+        group: jenkins
+        mode: '0755'
+
+    - name: Download Jenkins agent.jar from master
+      get_url:
+        url: "{{ jenkins_url }}/jnlpJars/agent.jar"
+        dest: "{{ remote_fs }}/agent.jar"
+        mode: '0755'
+
+    - name: Retrieve JNLP connection secret from master
+      delegate_to: "{{ groups['master_node'][0] }}"
+      uri:
+        url: "{{ jenkins_url }}/computer/{{ inventory_hostname }}/slave-agent.jnlp"
+        user: "{{ jenkins_user }}"
+        password: "{{ jenkins_master_api_token }}"
+        force_basic_auth: yes
+        return_content: yes
+      register: jnlp_file
+
+    - name: Parse secret from JNLP file
+      set_fact:
+        jenkins_agent_secret: "{{ (jnlp_file.content | regex_findall('<argument>([a-zA-Z0-9]+)</argument>'))[0] }}"
+
+    - name: Run Jenkins agent process in background
+      shell: |
+        nohup java -jar agent.jar -url {{ jenkins_url }} \
+        -secret {{ jenkins_agent_secret }} \
+        -name {{ inventory_hostname }} -webSocket > agent.log 2>&1 &
+      args:
+        chdir: "{{ remote_fs }}"

@@ -1,0 +1,5 @@
+tf_setup_env/.terraform.lock.hcl
+tf_setup_env/.terraform
+vault_pass.txt
+tf_setup_env/terraform.tfstate
+tf_setup_env/terraform.tfstate.backup
